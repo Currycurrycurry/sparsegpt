@@ -9,6 +9,7 @@ from modelutils import *
 
 try:
     import wandb
+    
     has_wandb = True
 except:
     has_wandb = False 

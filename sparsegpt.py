@@ -24,8 +24,8 @@ class SparseGPT:
             W = W.flatten(1)
         if isinstance(self.layer, transformers.Conv1D):
             W = W.t()
-        self.rows = W.shape[0]
-        self.columns = W.shape[1]
+        self.rows = W.shape[0] # row num
+        self.columns = W.shape[1] # col num
         self.H = torch.zeros((self.columns, self.columns), device=self.dev)
         self.nsamples = 0
 
@@ -74,11 +74,12 @@ class SparseGPT:
         H[diag, diag] += damp
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
-        H = torch.linalg.cholesky(H, upper=True)
-        Hinv = H
+        H = torch.linalg.cholesky(H, upper=True) # H−1 ← Cholesky(H−1)⊤ (Hessian inverse information)
+        Hinv = H # H−1 = (XX⊤ + λI)−1
 
-        mask = None
+        mask = None # binary pruning mask
 
+        # for i = 0,B,2B,... do
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
             count = i2 - i1
@@ -99,10 +100,12 @@ class SparseGPT:
             else:
                 mask1 = torch.zeros_like(W1) == 1
 
+            # forj =i,...,i+B−1 do
             for i in range(count):
                 w = W1[:, i]
                 d = Hinv1[i, i]
 
+                # if j mod B_s = 0 then:
                 if prunen != 0 and i % prunem == 0:
                     tmp = W1[:, i:(i + prunem)] ** 2 / (torch.diag(Hinv1)[i:(i + prunem)].reshape((1, -1))) ** 2
                     mask1.scatter_(1, i + torch.topk(tmp, prunen, dim=1, largest=False)[1], True)
@@ -118,14 +121,16 @@ class SparseGPT:
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d ** 2
 
+                # pruning error
+                # freeze weights
                 err1 = (w - q) / d
-                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0)) # W:,j:(i+B) ← W:,j:(i+B)−E:,j−i·Hj,j:(i+B)
                 Err1[:, i] = err1
 
             W[:, i1:i2] = Q1
             Losses += torch.sum(Losses1, 1) / 2
 
-            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:]) # W:,(i+B): ← W:,(i+B): − E · Hi:(i+B),(i+B)
 
             if DEBUG:
                 self.layer.weight.data[:, :i2] = W[:, :i2]
